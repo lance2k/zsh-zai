@@ -30,19 +30,25 @@ if wait_for "backend -> $backend" 10; then print "ok: switched to $backend"
 else print "FAIL: zai use $backend"; (( fails++ )); fi
 out=''
 
+# Explain a typed command via Alt+E. (Run before the suggest phase: a
+# suggested command can pop a completion-menu pager over the line in
+# live-menu setups like zsh-autocomplete's, which would eat the keypress —
+# a human dismisses that naturally; a pty script can't reliably.)
+zpty -w -n zai 'tar -xzvf backup.tar.gz -C /opt'
+sleep 1
+zpty -w -n zai $'\ee'
+if wait_for 'zai explain' 45; then print "ok: [$backend] explain rendered"
+else print -r -- "FAIL: [$backend] explain (tail: ${out[-300,-1]})"; (( fails++ )); fi
+out=''
+zpty -w -n zai $'\x15'   # kill-whole-line to clear the buffer
+sleep 1
+
 # Suggest: NL -> command in buffer (not executed)
 zpty -w -n zai 'print the current date and time'
 zpty -w -n zai $'\e\\'
 if wait_for 'date' 45; then print "ok: [$backend] suggest produced a date command"
 else print -r -- "FAIL: [$backend] suggest (tail: ${out[-300,-1]})"; (( fails++ )); fi
 [[ $out == *'command not found'* ]] && { print "FAIL: stray execution"; (( fails++ )) }
-out=''
-
-# Explain the suggested command via Alt+E (after a beat for redraw to settle)
-sleep 2
-zpty -w -n zai $'\ee'
-if wait_for 'zai explain' 45; then print "ok: [$backend] explain rendered"
-else print -r -- "FAIL: [$backend] explain (tail: ${out[-300,-1]})"; (( fails++ )); fi
 
 print "fails=$fails"
 (( fails == 0 ))

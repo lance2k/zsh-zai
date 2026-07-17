@@ -121,4 +121,4 @@ zsh tests/test-e2e.zsh [claude|codex|opencode]   # live call through your real z
 
 ## License
 
-MIT © 2026 Lance
+MIT © 2026 Honey Lance Morales

@@ -125,14 +125,14 @@ chk codex-no-project-doc  'has project_doc_max_bytes=0'
 chk codex-prompt-is-last-arg '[[ $argv_seen[-1] == $inline_prompt && $argv_seen[-2] == -- ]]'
 authlink=$_zai_cache/codex-home/auth.json
 chk codex-auth-symlink    '[[ -L $authlink && ${authlink:A} == ${realcodex:A}/auth.json ]]'
-chk codex-out-file-removed '[[ -z $(print -l $_zai_cache/codex-out*(N)) ]]'
+chk codex-out-file-removed '[[ -z $(print -l $_zai_cache/*codex-out*(N)) ]]'
 ZAI_CODEX_MODEL=other-model ask codex ok
 chk codex-model-override  '[[ $(val -m) == other-model ]]'
 ZAI_CODEX_MODEL= ask codex ok
 chk codex-model-empty-uses-default '[[ $(val -m) == gpt-5.3-codex-spark ]]'
 ask codex empty
 chk codex-empty-fails     '[[ $rc == 1 && -z $out ]]'
-chk codex-empty-message   'grep -q "codex produced no output" "$_zai_cache/last-stderr"'
+chk codex-empty-message   'grep -q "codex produced no output" "$_zai_cache/run.$$.stderr"'
 
 ask opencode ok
 chk opencode-reply        '[[ $rc == 0 && $out == opencode-reply ]]'
@@ -149,14 +149,14 @@ chk opencode-model-empty-uses-default '[[ $(val -m) == opencode-go/deepseek-v4-f
 for b in claude codex opencode; do
   ask $b fail
   chk "$b-failure-rc"      '[[ $rc == 3 && -z $out ]]'
-  chk "$b-failure-stderr"  'grep -q "$b blew up" "$_zai_cache/last-stderr"'
+  chk "$b-failure-stderr"  'grep -q "$b blew up" "$_zai_cache/run.$$.stderr"'
   ZAI_TIMEOUT=1 ask $b hang
   chk "$b-timeout"         '[[ $rc == 124 ]]'
 done
 
 ask bogus ok
 chk dispatch-bogus        '[[ $rc == 2 && -z $out && ! -e $ZAI_FAKE_LOG/calls ]]'
-chk bogus-writes-stderr   'grep -q "unknown ZAI_BACKEND" "$_zai_cache/last-stderr"'
+chk bogus-writes-stderr   'grep -q "unknown ZAI_BACKEND" "$_zai_cache/run.$$.stderr"'
 
 out=$(
   rm "$bindir/opencode"
@@ -165,7 +165,7 @@ out=$(
   print x | ZAI_BACKEND=opencode _zai_query sys
 ); rc=$?
 chk dispatch-not-installed '[[ $rc == 127 ]]'
-chk not-installed-message  'grep -q "CLI not installed" "$_zai_cache/last-stderr"'
+chk not-installed-message  'grep -q "CLI not installed" "$_zai_cache/run.$$.stderr"'
 
 # --- zai command ---
 zai use opencode >/dev/null

@@ -22,7 +22,7 @@
 # no ephemeral mode); codex and opencode receive instructions inline in the
 # prompt rather than as a true system prompt.
 
-typeset -g ZAI_VERSION=1.0.0
+typeset -g ZAI_VERSION=1.0.1
 typeset -g _zai_cache=${XDG_CACHE_HOME:-$HOME/.cache}/zai
 typeset -g ZAI_KEY_SUGGEST=${ZAI_KEY_SUGGEST:-'^[\\'}
 typeset -g ZAI_KEY_EXPLAIN=${ZAI_KEY_EXPLAIN:-'^[e'}
@@ -83,8 +83,8 @@ _zai_inline_prompt() {
 }
 
 # Backend contract: system prompt as $1, request on stdin, reply on stdout,
-# nonzero rc on failure. stderr is already redirected to last-stderr by the
-# dispatcher. Launch the CLI through _zai_run.
+# nonzero rc on failure. stderr is already redirected to this shell's error
+# file by the dispatcher. Launch the CLI through _zai_run.
 
 _zai_backend_claude() {
   _zai_run claude -p \
@@ -107,7 +107,7 @@ _zai_backend_codex() {
   req=$(command cat)
   local sandbox=$_zai_cache/codex-home
   local workdir=${TMPDIR:-/tmp}/zai-codex-$UID
-  local out=$_zai_cache/codex-out.$$
+  local out=$_zai_cache/run.$$.codex-out
   command mkdir -p -m 700 -- "$sandbox" "$workdir" || return 1
   [[ -O $workdir ]] || { print -u2 "workdir $workdir not owned by us"; return 1 }
   command ln -sf -- "${CODEX_HOME:-$HOME/.codex}/auth.json" "$sandbox/auth.json"
@@ -145,22 +145,24 @@ _zai_backend_opencode() {
 }
 
 # Runs the active backend from the empty cache dir so no project-level CLI
-# config (.claude/, AGENTS.md, git context) can influence the call.
+# config (.claude/, AGENTS.md, git context) can influence the call. Scratch
+# files are named run.<pid>.* so two shells never read each other's; $$ is
+# still the interactive shell's pid inside the subshells below.
 _zai_query() {
   emulate -L zsh
   command mkdir -p -- "$_zai_cache" || return 1
   local backend=${ZAI_BACKEND:-$_zai_backends[1]}
   if (( ! ${_zai_backends[(Ie)$backend]} )); then
-    print -r -- "unknown ZAI_BACKEND '$backend' (${(j:|:)_zai_backends})" >| "$_zai_cache/last-stderr"
+    print -r -- "unknown ZAI_BACKEND '$backend' (${(j:|:)_zai_backends})" >| "$_zai_cache/run.$$.stderr"
     return 2
   fi
   if (( ! $+commands[$backend] )); then
-    print -r -- "'$backend' CLI not installed" >| "$_zai_cache/last-stderr"
+    print -r -- "'$backend' CLI not installed" >| "$_zai_cache/run.$$.stderr"
     return 127
   fi
   (
     cd -- "$_zai_cache" || exit 1
-    _zai_backend_$backend "$1" 2>last-stderr
+    _zai_backend_$backend "$1" 2>run.$$.stderr
   )
 }
 
@@ -208,30 +210,50 @@ _zai_error() {
     zle -M "zai: timed out after ${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}s"
     return
   fi
-  line=$(command head -c 200 "$_zai_cache/last-stderr" 2>/dev/null)
+  line=$(command head -c 200 "$_zai_cache/run.$$.stderr" 2>/dev/null)
   line=${line//$'\n'/ }
   line=$(_zai_scrub_text "$line")
   zle -M "zai: backend failed, exit $rc${line:+ — ${line[1,120]}}"
 }
 
-_zai_suggest() {
+# One round-trip for the line being edited: $1 is the system prompt, $2 the
+# message for a blank line. The reply lands in REPLY. Returns 0 when a reply
+# is ready, 1 when the backend failed, 2 when the line was blank; in the last
+# two cases the message has already been shown.
+_zai_ask() {
   emulate -L zsh
-  local req=$BUFFER
+  local req=$BUFFER rc
   if [[ -z ${req//[[:space:]]/} ]]; then
-    zle -M "zai: type a natural-language request first"
-    return 0
+    zle -M "$2"
+    return 2
   fi
   zle -M "⏳ zai: asking ${ZAI_BACKEND:-$_zai_backends[1]} ($(_zai_model))…"
   zle -R
-  local out rc cmd
-  out=$(print -r -- "$req" | _zai_query "$_ZAI_SUGGEST_PROMPT")
-  rc=$?
-  _zai_drain
-  if (( rc != 0 )); then
-    _zai_error $rc
-    return 1
-  fi
-  if ! cmd=$(_zai_validate_cmd "$out"); then
+  {
+    REPLY=$(print -r -- "$req" | _zai_query "$1")
+    rc=$?
+    _zai_drain
+    if (( rc != 0 )); then
+      _zai_error $rc
+      return 1
+    fi
+  } always {
+    # Runs on every way out, including a wait the user interrupted with
+    # Ctrl-C, so no call leaves its files behind.
+    command rm -f -- "$_zai_cache"/run.$$.*(N)
+  }
+  return 0
+}
+
+_zai_suggest() {
+  emulate -L zsh
+  local REPLY cmd
+  _zai_ask "$_ZAI_SUGGEST_PROMPT" "zai: type a natural-language request first"
+  case $? in
+    1) return 1 ;;
+    2) return 0 ;;
+  esac
+  if ! cmd=$(_zai_validate_cmd "$REPLY"); then
     zle -M "zai: rejected an unusable response (empty/multi-line/control chars) — try rewording"
     return 1
   fi
@@ -244,22 +266,13 @@ _zai_suggest() {
 
 _zai_explain() {
   emulate -L zsh
-  local cmdline=$BUFFER
-  if [[ -z ${cmdline//[[:space:]]/} ]]; then
-    zle -M "zai: nothing on the line to explain"
-    return 0
-  fi
-  zle -M "⏳ zai: asking ${ZAI_BACKEND:-$_zai_backends[1]} ($(_zai_model))…"
-  zle -R
-  local out rc
-  out=$(print -r -- "$cmdline" | _zai_query "$_ZAI_EXPLAIN_PROMPT")
-  rc=$?
-  _zai_drain
-  if (( rc != 0 )); then
-    _zai_error $rc
-    return 1
-  fi
-  out=$(_zai_scrub_text "$out")
+  local REPLY out
+  _zai_ask "$_ZAI_EXPLAIN_PROMPT" "zai: nothing on the line to explain"
+  case $? in
+    1) return 1 ;;
+    2) return 0 ;;
+  esac
+  out=$(_zai_scrub_text "$REPLY")
   local -a lines
   lines=("${(@f)out}")
   (( ${#lines} > 24 )) && lines=("${(@)lines[1,24]}" "…")

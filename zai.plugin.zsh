@@ -42,22 +42,53 @@ typeset -g ZAI_KEY_EXPLAIN=${ZAI_KEY_EXPLAIN:-'^[e'}
 typeset -g _ZAI_SUGGEST_PROMPT="You convert a natural-language request into exactly one zsh command line for ${_ZAI_OS}. Output only the command: a single line, no markdown, no code fences, no commentary. If the input is already a shell command, return it unchanged or fixed."
 typeset -g _ZAI_EXPLAIN_PROMPT="Explain the given zsh command for ${_ZAI_OS}: one summary line, then each flag or argument on its own line, briefly. Plain text only, no markdown, at most 20 lines."
 
-_zai_model_label() {
-  case ${1:-${ZAI_BACKEND:-claude}} in
-    claude)   print -r -- "${ZAI_CLAUDE_MODEL:-haiku}" ;;
-    codex)    print -r -- "${ZAI_CODEX_MODEL:-gpt-5.3-codex-spark}" ;;
-    opencode) print -r -- "${ZAI_OPENCODE_MODEL:-opencode-go/deepseek-v4-flash}" ;;
-    *)        print -r -- "?" ;;
-  esac
+# Backend registry. Adding a backend means one entry in each of these three
+# plus a _zai_backend_<name> function; dispatch, `zai use|model|status|help`
+# and the model lookup all read from here. The first entry is the default.
+typeset -ga _zai_backends=(claude codex opencode)
+typeset -gA _zai_model_var=(
+  claude   ZAI_CLAUDE_MODEL
+  codex    ZAI_CODEX_MODEL
+  opencode ZAI_OPENCODE_MODEL
+)
+typeset -gA _zai_model_default=(
+  claude   haiku
+  codex    gpt-5.3-codex-spark
+  opencode opencode-go/deepseek-v4-flash
+)
+typeset -g _ZAI_DEFAULT_TIMEOUT=25
+
+_zai_model() {
+  local backend=${1:-${ZAI_BACKEND:-$_zai_backends[1]}}
+  local var=${_zai_model_var[$backend]-}
+  if [[ -z $var ]]; then
+    print -r -- "?"
+    return
+  fi
+  print -r -- "${(P)var:-$_zai_model_default[$backend]}"
+}
+
+# Every backend CLI is launched through this, so the time limit and the exit
+# codes that mean "timed out" are defined in one place.
+_zai_run() {
+  command timeout -k 5 "${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}" "$@"
+}
+_zai_timed_out() {
+  (( $1 == 124 || $1 == 137 ))
+}
+
+# For CLIs with no system-prompt flag: instructions and request in one prompt.
+_zai_inline_prompt() {
+  print -r -- "$1"$'\n\nRequest:\n'"$2"
 }
 
 # Backend contract: system prompt as $1, request on stdin, reply on stdout,
 # nonzero rc on failure. stderr is already redirected to last-stderr by the
-# dispatcher. Keep the timeout wrapper identical across backends.
+# dispatcher. Launch the CLI through _zai_run.
 
 _zai_backend_claude() {
-  command timeout -k 5 "${ZAI_TIMEOUT:-25}" claude -p \
-    --model "${ZAI_CLAUDE_MODEL:-haiku}" \
+  _zai_run claude -p \
+    --model "$(_zai_model claude)" \
     --system-prompt "$1" \
     --exclude-dynamic-system-prompt-sections \
     --disallowedTools 'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit,TodoWrite,Agent' \
@@ -81,14 +112,14 @@ _zai_backend_codex() {
   [[ -O $workdir ]] || { print -u2 "workdir $workdir not owned by us"; return 1 }
   command ln -sf -- "${CODEX_HOME:-$HOME/.codex}/auth.json" "$sandbox/auth.json"
   cd -- "$workdir" || return 1
-  HOME=$sandbox CODEX_HOME=$sandbox command timeout -k 5 "${ZAI_TIMEOUT:-25}" codex exec \
-    -m "${ZAI_CODEX_MODEL:-gpt-5.3-codex-spark}" \
+  HOME=$sandbox CODEX_HOME=$sandbox _zai_run codex exec \
+    -m "$(_zai_model codex)" \
     -c model_reasoning_effort=low \
     -c project_doc_max_bytes=0 \
     -s read-only --ephemeral --skip-git-repo-check \
     --ignore-rules --color never \
     --output-last-message "$out" \
-    -- "$1"$'\n\nRequest:\n'"$req" >/dev/null
+    -- "$(_zai_inline_prompt "$1" "$req")" >/dev/null
   rc=$?
   if (( rc == 0 )); then
     if [[ -s $out ]]; then
@@ -107,10 +138,10 @@ _zai_backend_codex() {
 _zai_backend_opencode() {
   local req
   req=$(command cat)
-  OPENCODE_ENABLE_EXA=0 command timeout -k 5 "${ZAI_TIMEOUT:-25}" opencode run \
-    -m "${ZAI_OPENCODE_MODEL:-opencode-go/deepseek-v4-flash}" \
+  OPENCODE_ENABLE_EXA=0 _zai_run opencode run \
+    -m "$(_zai_model opencode)" \
     --pure --log-level ERROR \
-    -- "$1"$'\n\nRequest:\n'"$req"
+    -- "$(_zai_inline_prompt "$1" "$req")"
 }
 
 # Runs the active backend from the empty cache dir so no project-level CLI
@@ -118,9 +149,9 @@ _zai_backend_opencode() {
 _zai_query() {
   emulate -L zsh
   command mkdir -p -- "$_zai_cache" || return 1
-  local backend=${ZAI_BACKEND:-claude}
-  if [[ $backend != (claude|codex|opencode) ]]; then
-    print -r -- "unknown ZAI_BACKEND '$backend' (claude|codex|opencode)" >| "$_zai_cache/last-stderr"
+  local backend=${ZAI_BACKEND:-$_zai_backends[1]}
+  if (( ! ${_zai_backends[(Ie)$backend]} )); then
+    print -r -- "unknown ZAI_BACKEND '$backend' (${(j:|:)_zai_backends})" >| "$_zai_cache/last-stderr"
     return 2
   fi
   if (( ! $+commands[$backend] )); then
@@ -173,8 +204,8 @@ _zai_validate_cmd() {
 _zai_error() {
   emulate -L zsh
   local rc=$1 line
-  if (( rc == 124 || rc == 137 )); then
-    zle -M "zai: timed out after ${ZAI_TIMEOUT:-25}s"
+  if _zai_timed_out $rc; then
+    zle -M "zai: timed out after ${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}s"
     return
   fi
   line=$(command head -c 200 "$_zai_cache/last-stderr" 2>/dev/null)
@@ -190,7 +221,7 @@ _zai_suggest() {
     zle -M "zai: type a natural-language request first"
     return 0
   fi
-  zle -M "⏳ zai: asking ${ZAI_BACKEND:-claude} ($(_zai_model_label))…"
+  zle -M "⏳ zai: asking ${ZAI_BACKEND:-$_zai_backends[1]} ($(_zai_model))…"
   zle -R
   local out rc cmd
   out=$(print -r -- "$req" | _zai_query "$_ZAI_SUGGEST_PROMPT")
@@ -218,7 +249,7 @@ _zai_explain() {
     zle -M "zai: nothing on the line to explain"
     return 0
   fi
-  zle -M "⏳ zai: asking ${ZAI_BACKEND:-claude} ($(_zai_model_label))…"
+  zle -M "⏳ zai: asking ${ZAI_BACKEND:-$_zai_backends[1]} ($(_zai_model))…"
   zle -R
   local out rc
   out=$(print -r -- "$cmdline" | _zai_query "$_ZAI_EXPLAIN_PROMPT")
@@ -240,12 +271,12 @@ _zai_explain() {
 
 zai() {
   emulate -L zsh
-  local -a backends=(claude codex opencode)
-  local cur=${ZAI_BACKEND:-claude} b mark inst
+  local names=${(j:|:)_zai_backends}
+  local cur=${ZAI_BACKEND:-$_zai_backends[1]} b mark inst var
   case ${1:-status} in
     use)
-      if (( ! ${backends[(Ie)${2:-}]} )); then
-        print -ru2 -- "zai: usage: zai use <claude|codex|opencode>"
+      if (( ! ${_zai_backends[(Ie)${2:-}]} )); then
+        print -ru2 -- "zai: usage: zai use <$names>"
         return 2
       fi
       export ZAI_BACKEND=$2
@@ -256,22 +287,19 @@ zai() {
         print -ru2 -- "zai: usage: zai model <model>  (sets the model for the current backend: $cur)"
         return 2
       fi
-      case $cur in
-        claude)   export ZAI_CLAUDE_MODEL=$2 ;;
-        codex)    export ZAI_CODEX_MODEL=$2 ;;
-        opencode) export ZAI_OPENCODE_MODEL=$2 ;;
-      esac
+      var=${_zai_model_var[$cur]-}
+      [[ -n $var ]] && export "$var=$2"
       print -r -- "zai: $cur model -> $2 (this session)"
       ;;
     status)
-      print -r -- "zai $ZAI_VERSION — backend: $cur ($(_zai_model_label)), timeout: ${ZAI_TIMEOUT:-25}s"
+      print -r -- "zai $ZAI_VERSION — backend: $cur ($(_zai_model)), timeout: ${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}s"
       print -r -- "keys: suggest $ZAI_KEY_SUGGEST  explain $ZAI_KEY_EXPLAIN"
-      for b in $backends; do
+      for b in $_zai_backends; do
         mark=' '
         [[ $b == $cur ]] && mark='*'
         inst='not installed'
         (( $+commands[$b] )) && inst='installed'
-        printf ' %s %-9s %-14s %s\n' $mark $b $inst "$(_zai_model_label $b)"
+        printf ' %s %-9s %-14s %s\n' $mark $b $inst "$(_zai_model $b)"
       done
       ;;
     help|-h|--help)
@@ -279,7 +307,7 @@ zai() {
         "zai $ZAI_VERSION — AI suggest/explain widgets" \
         "  $ZAI_KEY_SUGGEST : turn the natural-language line into a shell command" \
         "  $ZAI_KEY_EXPLAIN : explain the command on the line" \
-        "usage: zai [status] | zai use <claude|codex|opencode> | zai model <model> | zai help" \
+        "usage: zai [status] | zai use <$names> | zai model <model> | zai help" \
         "env: ZAI_BACKEND ZAI_CLAUDE_MODEL ZAI_CODEX_MODEL ZAI_OPENCODE_MODEL ZAI_TIMEOUT ZAI_KEY_SUGGEST ZAI_KEY_EXPLAIN"
       ;;
     *)

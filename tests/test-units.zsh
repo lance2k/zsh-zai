@@ -121,7 +121,7 @@ chk codex-cwd-not-cache   '[[ $(logged cwd) != ${_zai_cache:A}* ]]'
 chk codex-read-only       '[[ $(val -s) == read-only ]]'
 chk codex-ephemeral       'has --ephemeral'
 chk codex-ignore-rules    'has --ignore-rules'
-chk codex-no-project-doc  'has project_doc_max_bytes=0'
+chk codex-no-project-doc  '(( i = ${argv_seen[(Ie)project_doc_max_bytes=0]} )) && [[ $argv_seen[i-1] == -c ]]'
 chk codex-prompt-is-last-arg '[[ $argv_seen[-1] == $inline_prompt && $argv_seen[-2] == -- ]]'
 authlink=$_zai_cache/codex-home/auth.json
 chk codex-auth-symlink    '[[ -L $authlink && ${authlink:A} == ${realcodex:A}/auth.json ]]'
@@ -150,8 +150,9 @@ for b in claude codex opencode; do
   ask $b fail
   chk "$b-failure-rc"      '[[ $rc == 3 && -z $out ]]'
   chk "$b-failure-stderr"  'grep -q "$b blew up" "$_zai_cache/run.$$.stderr"'
+  started=$SECONDS
   ZAI_TIMEOUT=1 ask $b hang
-  chk "$b-timeout"         '[[ $rc == 124 ]]'
+  chk "$b-timeout"         '[[ $rc == 124 ]] && (( SECONDS - started <= 4 ))'
 done
 
 ask bogus ok
@@ -178,7 +179,8 @@ zai model foo >/dev/null
 [[ $ZAI_OPENCODE_MODEL == foo ]] && print "ok: zai-model" || { print "FAIL: zai-model"; (( fails++ )) }
 unset ZAI_OPENCODE_MODEL
 ZAI_BACKEND=bogus
-st=$(zai model foo 2>&1); rc=$?
+zai model foo > "$_zai_cache/model-out" 2>&1; rc=$?
+st=$(<"$_zai_cache/model-out")
 [[ $rc == 0 && $st == 'zai: bogus model -> foo (this session)' && -z ${ZAI_CLAUDE_MODEL-}${ZAI_CODEX_MODEL-}${ZAI_OPENCODE_MODEL-} ]] \
   && print "ok: zai-model-unknown-backend" || { print -r -- "FAIL: zai-model-unknown-backend (rc=$rc) -> $st"; (( fails++ )) }
 zai bogus-sub 2>/dev/null; (( $? == 2 )) && print "ok: zai-unknown-sub" || { print "FAIL: zai-unknown-sub"; (( fails++ )) }

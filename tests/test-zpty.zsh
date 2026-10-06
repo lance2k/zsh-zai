@@ -62,10 +62,12 @@ zpty -w -n zai 'echo interrupted'
 zpty -w -n zai $'\e\\'
 sleep 1.5
 mid=$(scratch_files)
+answer=($td/cache/zai/run.*.codex-out(N))
 zpty -w -n zai $'\x03'
 sleep 4
 drain_pty; E=$out; out=''
 check "E: scratch files exist mid-call"   'files=0' 0 "$mid"
+check "E: answer file written mid-call"   'answers=1' 1 "answers=${#answer}"
 check "E: Ctrl-C leaves no scratch files" 'files=0' 1 "$(scratch_files)"
 check "E: nothing executed"               'EXEC:'   0 "$E"
 zpty -w zai 'unset ZAI_FAKE_MODE ZAI_TIMEOUT; echo alive'

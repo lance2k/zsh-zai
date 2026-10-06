@@ -1,6 +1,6 @@
 #!/usr/bin/env zsh
 # Unit tests for zai's pure functions, dispatcher, and `zai` command.
-# No ZLE, no live backends — backend functions are stubbed.
+# No ZLE, no live backends — the CLIs are replaced by tests/fake-cli.
 emulate zsh
 
 source "${0:A:h}/../zai.plugin.zsh" || { print "FAIL: source"; exit 1 }
@@ -44,42 +44,128 @@ s=$(_zai_scrub_text $'a\e[2Jb\x01c')
 s=$(_zai_scrub_text $'line1\nline2\ttab')
 [[ $s == $'line1\nline2\ttab' ]] && print "ok: scrub-keeps-nl-tab" || { print -r -- "FAIL: scrub-keeps-nl-tab -> ${(q)s}"; (( fails++ )) }
 
-# --- dispatcher (stub backends; fake binaries so $+commands passes anywhere) ---
+# --- backends: the real adapters, launched against recording fake CLIs ---
+# tests/fake-cli stands in for all three CLIs (first on PATH) and writes down
+# its argv, cwd, environment and stdin, so the isolation flags are asserted
+# without a live call.
+export ZAI_FAKE_LOG=$(mktemp -d)
+realcodex=$(mktemp -d)
+print '{}' > "$realcodex/auth.json"
+export CODEX_HOME=$realcodex
+export TMPDIR=$(mktemp -d)
+trap 'rm -rf "$_zai_cache" "$bindir" "$ZAI_FAKE_LOG" "$realcodex" "$TMPDIR"' EXIT
+
 for b in claude codex opencode; do
-  print '#!/bin/sh' > "$bindir/$b"
+  cp "${0:A:h}/fake-cli" "$bindir/$b"
   chmod +x "$bindir/$b"
 done
 path=("$bindir" $path)
 hash -r
 
-_zai_backend_claude()   { print claude-hit }
-_zai_backend_codex()    { print codex-hit }
-_zai_backend_opencode() { print opencode-hit }
+typeset -a argv_seen
+typeset out rc
 
-d() { # name backend want_rc want_out
-  local name=$1 backend=$2 want=$3 wantout=$4
-  local out rc
-  if [[ $backend == unset ]]; then
-    out=$(print x | _zai_query sys); rc=$?
+ask() { # backend mode
+  rm -f "$ZAI_FAKE_LOG"/*(N)
+  if [[ $1 == unset ]]; then
+    out=$(print -r -- 'the request' | ZAI_FAKE_MODE=$2 _zai_query 'the system prompt'); rc=$?
   else
-    out=$(print x | ZAI_BACKEND=$backend _zai_query sys); rc=$?
+    out=$(print -r -- 'the request' | ZAI_BACKEND=$1 ZAI_FAKE_MODE=$2 _zai_query 'the system prompt'); rc=$?
   fi
-  if (( rc != want )) || [[ $out != $wantout ]]; then
-    print -r -- "FAIL: $name (rc=$rc out=${(q)out})"; (( fails++ ))
-  else
-    print -r -- "ok: $name"
+  argv_seen=()
+  if [[ -r $ZAI_FAKE_LOG/argv ]]; then
+    argv_seen=("${(@0)$(<$ZAI_FAKE_LOG/argv)}")
+    argv_seen[-1]=()   # the record ends with a NUL, which splits off one empty element
   fi
 }
+has()    { (( ${argv_seen[(Ie)$1]} )) }
+val()    { local i=${argv_seen[(ie)$1]}; print -r -- "${argv_seen[i+1]-}" }
+logged() { print -r -- "$(<$ZAI_FAKE_LOG/$1)" }
+chk() { # name expression
+  if eval "$2"; then print -r -- "ok: $1"
+  else print -r -- "FAIL: $1 (rc=$rc out=${(q)out})"; (( fails++ )); fi
+}
+inline_prompt=$'the system prompt\n\nRequest:\nthe request'
 
-unset ZAI_BACKEND
-d dispatch-default  unset    0 claude-hit
-d dispatch-claude   claude   0 claude-hit
-d dispatch-codex    codex    0 codex-hit
-d dispatch-opencode opencode 0 opencode-hit
-d dispatch-bogus    bogus    2 ''
-grep -q 'unknown ZAI_BACKEND' "$_zai_cache/last-stderr" \
-  && print "ok: bogus-writes-stderr" \
-  || { print "FAIL: bogus-writes-stderr"; (( fails++ )) }
+unset ZAI_BACKEND ZAI_CLAUDE_MODEL ZAI_CODEX_MODEL ZAI_OPENCODE_MODEL ZAI_TIMEOUT
+
+ask unset ok
+chk dispatch-default  '[[ $(logged calls) == claude && $rc == 0 ]]'
+
+ask claude ok
+chk claude-reply          '[[ $rc == 0 && $out == claude-reply ]]'
+chk claude-dispatch       '[[ $(logged calls) == claude ]]'
+chk claude-model-default  '[[ $(val --model) == haiku ]]'
+chk claude-system-prompt  '[[ $(val --system-prompt) == "the system prompt" ]]'
+chk claude-request-stdin  '[[ $(logged stdin) == "the request" ]]'
+chk claude-no-dynamic-sections 'has --exclude-dynamic-system-prompt-sections'
+chk claude-strict-mcp     'has --strict-mcp-config'
+chk claude-no-session     'has --no-session-persistence'
+chk claude-cwd-is-cache   '[[ $(logged cwd) == ${_zai_cache:A} ]]'
+blocked=(${(s:,:)"$(val --disallowedTools)"})
+for tool in Bash Edit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit TodoWrite Agent; do
+  chk "claude-blocks-$tool" '(( ${blocked[(Ie)$tool]} ))'
+done
+ZAI_CLAUDE_MODEL=other-model ask claude ok
+chk claude-model-override '[[ $(val --model) == other-model ]]'
+ZAI_CLAUDE_MODEL= ask claude ok
+chk claude-model-empty-uses-default '[[ $(val --model) == haiku ]]'
+
+ask codex ok
+chk codex-reply-only-last-message '[[ $rc == 0 && $out == codex-reply ]]'
+chk codex-dispatch        '[[ $(logged calls) == codex ]]'
+chk codex-model-default   '[[ $(val -m) == gpt-5.3-codex-spark ]]'
+chk codex-home-sandboxed  '[[ $(logged env) == *"HOME=$_zai_cache/codex-home"$'"'\n'"'"CODEX_HOME=$_zai_cache/codex-home"$'"'\n'"'* ]]'
+chk codex-cwd-is-workdir  '[[ $(logged cwd) == ${TMPDIR:A}/zai-codex-$UID ]]'
+chk codex-cwd-not-cache   '[[ $(logged cwd) != ${_zai_cache:A}* ]]'
+chk codex-read-only       '[[ $(val -s) == read-only ]]'
+chk codex-ephemeral       'has --ephemeral'
+chk codex-ignore-rules    'has --ignore-rules'
+chk codex-no-project-doc  'has project_doc_max_bytes=0'
+chk codex-prompt-is-last-arg '[[ $argv_seen[-1] == $inline_prompt && $argv_seen[-2] == -- ]]'
+authlink=$_zai_cache/codex-home/auth.json
+chk codex-auth-symlink    '[[ -L $authlink && ${authlink:A} == ${realcodex:A}/auth.json ]]'
+chk codex-out-file-removed '[[ -z $(print -l $_zai_cache/codex-out*(N)) ]]'
+ZAI_CODEX_MODEL=other-model ask codex ok
+chk codex-model-override  '[[ $(val -m) == other-model ]]'
+ZAI_CODEX_MODEL= ask codex ok
+chk codex-model-empty-uses-default '[[ $(val -m) == gpt-5.3-codex-spark ]]'
+ask codex empty
+chk codex-empty-fails     '[[ $rc == 1 && -z $out ]]'
+chk codex-empty-message   'grep -q "codex produced no output" "$_zai_cache/last-stderr"'
+
+ask opencode ok
+chk opencode-reply        '[[ $rc == 0 && $out == opencode-reply ]]'
+chk opencode-dispatch     '[[ $(logged calls) == opencode ]]'
+chk opencode-model-default '[[ $(val -m) == opencode-go/deepseek-v4-flash ]]'
+chk opencode-pure         'has --pure'
+chk opencode-no-websearch '[[ $(logged env) == *OPENCODE_ENABLE_EXA=0* ]]'
+chk opencode-prompt-is-last-arg '[[ $argv_seen[-1] == $inline_prompt && $argv_seen[-2] == -- ]]'
+ZAI_OPENCODE_MODEL=other-model ask opencode ok
+chk opencode-model-override '[[ $(val -m) == other-model ]]'
+ZAI_OPENCODE_MODEL= ask opencode ok
+chk opencode-model-empty-uses-default '[[ $(val -m) == opencode-go/deepseek-v4-flash ]]'
+
+for b in claude codex opencode; do
+  ask $b fail
+  chk "$b-failure-rc"      '[[ $rc == 3 && -z $out ]]'
+  chk "$b-failure-stderr"  'grep -q "$b blew up" "$_zai_cache/last-stderr"'
+  ZAI_TIMEOUT=1 ask $b hang
+  chk "$b-timeout"         '[[ $rc == 124 ]]'
+done
+
+ask bogus ok
+chk dispatch-bogus        '[[ $rc == 2 && -z $out && ! -e $ZAI_FAKE_LOG/calls ]]'
+chk bogus-writes-stderr   'grep -q "unknown ZAI_BACKEND" "$_zai_cache/last-stderr"'
+
+out=$(
+  rm "$bindir/opencode"
+  path=(${^path}(N/e:'[[ ! -x $REPLY/opencode ]]':))
+  hash -r
+  print x | ZAI_BACKEND=opencode _zai_query sys
+); rc=$?
+chk dispatch-not-installed '[[ $rc == 127 ]]'
+chk not-installed-message  'grep -q "CLI not installed" "$_zai_cache/last-stderr"'
 
 # --- zai command ---
 zai use opencode >/dev/null
@@ -90,6 +176,11 @@ st=$(zai status)
   && print "ok: zai-status" || { print -r -- "FAIL: zai-status -> $st"; (( fails++ )) }
 zai model foo >/dev/null
 [[ $ZAI_OPENCODE_MODEL == foo ]] && print "ok: zai-model" || { print "FAIL: zai-model"; (( fails++ )) }
+unset ZAI_OPENCODE_MODEL
+ZAI_BACKEND=bogus
+st=$(zai model foo 2>&1); rc=$?
+[[ $rc == 0 && $st == 'zai: bogus model -> foo (this session)' && -z ${ZAI_CLAUDE_MODEL-}${ZAI_CODEX_MODEL-}${ZAI_OPENCODE_MODEL-} ]] \
+  && print "ok: zai-model-unknown-backend" || { print -r -- "FAIL: zai-model-unknown-backend (rc=$rc) -> $st"; (( fails++ )) }
 zai bogus-sub 2>/dev/null; (( $? == 2 )) && print "ok: zai-unknown-sub" || { print "FAIL: zai-unknown-sub"; (( fails++ )) }
 unset ZAI_BACKEND ZAI_OPENCODE_MODEL
 

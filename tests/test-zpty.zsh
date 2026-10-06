@@ -14,7 +14,7 @@ preexec() { print -r -- "EXEC:\$1" }
 source $plugin
 EOF
 
-zpty zai env ZDOTDIR=$td ZAI_TEST_CACHE=$td/cache zsh -i
+zpty zai env ZDOTDIR=$td XDG_CACHE_HOME=$td/cache zsh -i
 sleep 1
 
 out=''

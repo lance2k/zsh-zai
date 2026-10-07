@@ -114,10 +114,24 @@ tool: read the suggestion before you run it.
 ## Tests
 
 ```sh
-zsh tests/test-units.zsh   # validation/scrub/dispatch/command units
+zsh tests/test-units.zsh   # validation/scrub/command units, and the real backend adapters against a fake CLI
 zsh tests/test-zpty.zsh    # interactive ZLE behavior in a scripted pty
 zsh tests/test-e2e.zsh [claude|codex|opencode]   # live call through your real zshrc
 ```
+
+`tests/fake-cli` stands in for all three CLIs and records the arguments,
+environment, working directory and stdin it was launched with, so the
+isolation flags above are asserted without a live call.
+
+## Adding a backend
+
+1. Add its name to `_zai_backends`, its model variable to `_zai_model_var`
+   and its default model to `_zai_model_default` in `zai.plugin.zsh`.
+2. Write `_zai_backend_<name>`: system prompt as `$1`, request on stdin,
+   reply on stdout, nonzero exit on failure. Launch the CLI through
+   `_zai_run` so the time limit applies, with every flag it has for
+   disabling tools, rules, plugins and session records.
+3. Assert those flags in `tests/test-units.zsh`.
 
 ## License
 

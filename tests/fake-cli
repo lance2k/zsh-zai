@@ -1,0 +1,36 @@
+#!/bin/sh
+# Stand-in for the claude/codex/opencode CLIs. Records what it was launched
+# with under $ZAI_FAKE_LOG (argv NUL-delimited, so a multi-line argument keeps
+# its boundaries) and behaves according to $ZAI_FAKE_MODE
+# (ok | fail | hang | empty | stall). stall is codex having written its answer
+# file and then hanging, the state an interrupted call leaves behind.
+name=${0##*/}
+log=${ZAI_FAKE_LOG:?}
+printf '%s\n' "$name" >> "$log/calls"
+: > "$log/argv"
+for a in "$@"; do printf '%s\0' "$a" >> "$log/argv"; done
+pwd -P > "$log/cwd"
+printf 'HOME=%s\nCODEX_HOME=%s\nOPENCODE_ENABLE_EXA=%s\n' \
+  "$HOME" "${CODEX_HOME-}" "${OPENCODE_ENABLE_EXA-}" > "$log/env"
+
+case ${ZAI_FAKE_MODE:-ok} in
+  hang) exec sleep 30 ;;
+esac
+cat > "$log/stdin"
+case ${ZAI_FAKE_MODE:-ok} in
+  fail) echo "$name blew up" >&2; exit 3 ;;
+esac
+
+if [ "$name" = codex ]; then
+  echo 'codex transcript chatter'
+  [ "${ZAI_FAKE_MODE:-ok}" = empty ] && exit 0
+  out=
+  while [ $# -gt 0 ]; do
+    [ "$1" = --output-last-message ] && out=$2
+    shift
+  done
+  printf '%s\n' "$name-reply" > "$out"
+  if [ "${ZAI_FAKE_MODE:-ok}" = stall ]; then exec sleep 30; fi
+else
+  printf '%s\n' "$name-reply"
+fi

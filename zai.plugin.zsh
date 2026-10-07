@@ -94,11 +94,6 @@ _zai_model_label() {
 # CLI therefore runs in the background and the INT trap passes the interrupt
 # on; a foreground child would hold the trap back until the time limit.
 # Callers run inside _zai_query's subshell, which is all the trap affects.
-#
-# timeout exits as soon as the CLI itself does, so a child of the CLI that
-# ignores TERM would outlive a cancelled or timed-out call and could still
-# write the answer file. Its process group id is timeout's pid, so whatever
-# is left of the group is killed before returning on those two paths.
 _zai_run() {
   command timeout -k 5 "${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}" "$@" <&0 &
   local pid=$! rc interrupted=0
@@ -112,10 +107,7 @@ _zai_run() {
     while kill -0 $pid 2>/dev/null; do
       wait $pid
     done
-    rc=130
-  fi
-  if (( interrupted )) || _zai_timed_out $rc; then
-    kill -KILL -- -$pid 2>/dev/null
+    return 130
   fi
   return $rc
 }
@@ -153,7 +145,11 @@ _zai_backend_codex() {
   req=$(command cat)
   local sandbox=$_zai_cache/codex-home
   local workdir=${TMPDIR:-/tmp}/zai-codex-$UID
-  local out=$_zai_cache/run.$$.codex-out
+  # A fresh name per call: timeout exits as soon as codex itself does, so a
+  # child of codex that ignores TERM can outlive a cancelled or timed-out
+  # call and write its answer late. It must not land in a later call's file.
+  local out
+  out=$(command mktemp "$_zai_cache/run.$$.codex-out.XXXXXX") || return 1
   command mkdir -p -m 700 -- "$sandbox" "$workdir" || return 1
   [[ -O $workdir ]] || { print -u2 "workdir $workdir not owned by us"; return 1 }
   command ln -sf -- "${CODEX_HOME:-$HOME/.codex}/auth.json" "$sandbox/auth.json"

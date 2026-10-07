@@ -6,7 +6,7 @@
 # process, its answer file written, hanging, and slow to die: on TERM it takes
 # a second and writes the answer file again before exiting. orphan is codex
 # dying at once on TERM while a child that ignores TERM lives on and writes
-# the answer file four seconds after launch.
+# the answer file two seconds after launch.
 name=${0##*/}
 log=${ZAI_FAKE_LOG:?}
 printf '%s\n' "$name" >> "$log/calls"
@@ -41,7 +41,7 @@ if [ "$name" = codex ]; then
     wait
   fi
   if [ "${ZAI_FAKE_MODE:-ok}" = orphan ]; then
-    ( trap '' TERM; sleep 4; printf 'late\n' > "$out" ) &
+    ( trap '' TERM; sleep 2; printf 'late\n' > "$out" ) &
     echo $! > "$log/child"
     wait
   fi

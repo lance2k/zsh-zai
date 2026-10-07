@@ -114,7 +114,7 @@ chk claude-model-empty-uses-default '[[ $(val --model) == haiku ]]'
 ask codex ok
 chk codex-reply-only-last-message '[[ $rc == 0 && $out == codex-reply ]]'
 chk codex-dispatch        '[[ $(logged calls) == codex ]]'
-chk codex-model-default   '[[ $(val -m) == gpt-5.3-codex-spark ]]'
+chk codex-model-default-is-cli-choice '! has -m'
 chk codex-home-sandboxed  '[[ $(logged env) == *"HOME=$_zai_cache/codex-home"$'"'\n'"'"CODEX_HOME=$_zai_cache/codex-home"$'"'\n'"'* ]]'
 chk codex-cwd-is-workdir  '[[ $(logged cwd) == ${TMPDIR:A}/zai-codex-$UID ]]'
 chk codex-cwd-not-cache   '[[ $(logged cwd) != ${_zai_cache:A}* ]]'
@@ -129,7 +129,8 @@ chk codex-out-file-removed '[[ -z $(print -l $_zai_cache/*codex-out*(N)) ]]'
 ZAI_CODEX_MODEL=other-model ask codex ok
 chk codex-model-override  '[[ $(val -m) == other-model ]]'
 ZAI_CODEX_MODEL= ask codex ok
-chk codex-model-empty-uses-default '[[ $(val -m) == gpt-5.3-codex-spark ]]'
+chk codex-model-empty-is-cli-choice '! has -m'
+chk codex-status-says-cli-default '[[ $(zai status) == *"codex "*"CLI default"* ]]'
 ask codex empty
 chk codex-empty-fails     '[[ $rc == 1 && -z $out ]]'
 chk codex-empty-message   'grep -q "codex produced no output" "$_zai_cache/run.$$.stderr"'

@@ -168,6 +168,21 @@ out=$(
 chk dispatch-not-installed '[[ $rc == 127 ]]'
 chk not-installed-message  'grep -q "CLI not installed" "$_zai_cache/run.$$.stderr"'
 
+# --- stale scratch files are swept when the plugin loads ---
+(
+  export XDG_CACHE_HOME=$(mktemp -d)
+  mkdir -p "$XDG_CACHE_HOME/zai"
+  command sleep 0 & dead=$!
+  wait $dead
+  : > "$XDG_CACHE_HOME/zai/run.$dead.stderr" > "$XDG_CACHE_HOME/zai/run.$dead.codex-out"
+  : > "$XDG_CACHE_HOME/zai/run.$$.stderr" > "$XDG_CACHE_HOME/zai/keep.txt"
+  source "${0:A:h}/../zai.plugin.zsh"
+  left=("$XDG_CACHE_HOME"/zai/*(N:t))
+  rm -rf "$XDG_CACHE_HOME"
+  [[ ${(j: :)left} == "keep.txt run.$$.stderr" ]]
+) && print "ok: sweep-removes-only-dead-shells-files" \
+  || { print "FAIL: sweep-removes-only-dead-shells-files"; (( fails++ )) }
+
 # --- zai command ---
 zai use opencode >/dev/null
 [[ $ZAI_BACKEND == opencode ]] && print "ok: zai-use" || { print "FAIL: zai-use"; (( fails++ )) }

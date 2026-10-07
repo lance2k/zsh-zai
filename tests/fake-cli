@@ -7,6 +7,7 @@
 name=${0##*/}
 log=${ZAI_FAKE_LOG:?}
 printf '%s\n' "$name" >> "$log/calls"
+echo $$ > "$log/pid"
 : > "$log/argv"
 for a in "$@"; do printf '%s\0' "$a" >> "$log/argv"; done
 pwd -P > "$log/cwd"

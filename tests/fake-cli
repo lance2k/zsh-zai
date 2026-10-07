@@ -2,11 +2,13 @@
 # Stand-in for the claude/codex/opencode CLIs. Records what it was launched
 # with under $ZAI_FAKE_LOG (argv NUL-delimited, so a multi-line argument keeps
 # its boundaries) and behaves according to $ZAI_FAKE_MODE
-# (ok | fail | hang | empty | stall). stall is codex having written its answer
-# file and then hanging, the state an interrupted call leaves behind.
+# (ok | fail | hang | empty | stall). stall is codex with a child process,
+# its answer file written, hanging, and slow to die: on TERM it takes a second
+# and writes the answer file again before exiting.
 name=${0##*/}
 log=${ZAI_FAKE_LOG:?}
 printf '%s\n' "$name" >> "$log/calls"
+echo $$ > "$log/pid"
 : > "$log/argv"
 for a in "$@"; do printf '%s\0' "$a" >> "$log/argv"; done
 pwd -P > "$log/cwd"
@@ -30,7 +32,12 @@ if [ "$name" = codex ]; then
     shift
   done
   printf '%s\n' "$name-reply" > "$out"
-  if [ "${ZAI_FAKE_MODE:-ok}" = stall ]; then exec sleep 30; fi
+  if [ "${ZAI_FAKE_MODE:-ok}" = stall ]; then
+    sleep 30 &
+    echo $! > "$log/child"
+    trap 'sleep 1; printf "late\n" > "$out"; exit 0' TERM
+    wait
+  fi
 else
   printf '%s\n' "$name-reply"
 fi

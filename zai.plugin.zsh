@@ -22,7 +22,7 @@
 # no ephemeral mode); codex and opencode receive instructions inline in the
 # prompt rather than as a true system prompt.
 
-typeset -g ZAI_VERSION=1.0.1
+typeset -g ZAI_VERSION=1.0.2
 typeset -g _zai_cache=${XDG_CACHE_HOME:-$HOME/.cache}/zai
 typeset -g ZAI_KEY_SUGGEST=${ZAI_KEY_SUGGEST:-'^[\\'}
 typeset -g ZAI_KEY_EXPLAIN=${ZAI_KEY_EXPLAIN:-'^[e'}
@@ -37,6 +37,17 @@ typeset -g ZAI_KEY_EXPLAIN=${ZAI_KEY_EXPLAIN:-'^[e'}
       [[ $line == PRETTY_NAME=* ]] && { _ZAI_OS=${${line#PRETTY_NAME=}//\"/}; break }
     done
   fi
+}
+
+# A shell killed mid-call (terminal closed) never reaches its own clean-up,
+# so each new shell removes the scratch files of shells that no longer exist.
+() {
+  emulate -L zsh
+  local f pid
+  for f in "$_zai_cache"/run.<->.*(N); do
+    pid=${${f:t}#run.}
+    kill -0 ${pid%%.*} 2>/dev/null || command rm -f -- "$f"
+  done
 }
 
 typeset -g _ZAI_SUGGEST_PROMPT="You convert a natural-language request into exactly one zsh command line for ${_ZAI_OS}. Output only the command: a single line, no markdown, no code fences, no commentary. If the input is already a shell command, return it unchanged or fixed."
@@ -70,8 +81,28 @@ _zai_model() {
 
 # Every backend CLI is launched through this, so the time limit and the exit
 # codes that mean "timed out" are defined in one place.
+#
+# timeout moves the CLI into its own process group so it can kill the CLI's
+# children too, which also means the terminal's Ctrl-C never reaches it. The
+# CLI therefore runs in the background and the INT trap passes the interrupt
+# on; a foreground child would hold the trap back until the time limit.
+# Callers run inside _zai_query's subshell, which is all the trap affects.
 _zai_run() {
-  command timeout -k 5 "${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}" "$@"
+  command timeout -k 5 "${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}" "$@" <&0 &
+  local pid=$! rc interrupted=0
+  trap "interrupted=1; kill -TERM $pid 2>/dev/null" INT
+  wait $pid
+  rc=$?
+  if (( interrupted )); then
+    # wait returned when the trap ran, not when the CLI died. Stay until
+    # timeout has finished stopping it (at most the -k grace period), so
+    # nothing can still be writing when the callers clean up.
+    while kill -0 $pid 2>/dev/null; do
+      wait $pid
+    done
+    return 130
+  fi
+  return $rc
 }
 _zai_timed_out() {
   (( $1 == 124 || $1 == 137 ))

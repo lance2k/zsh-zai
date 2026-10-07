@@ -52,9 +52,10 @@ check "D: original buffer intact"   'EXEC:echo original' 1 "$D2"
 scratch_files() { local -a f; f=($td/cache/zai/*(N.)); print -r -- "files=${#f}" }
 check "D: error file removed"       'files=0' 1 "$(scratch_files)"
 
-# Phase E: Ctrl-C during the wait. The fake codex has written its answer file
-# and then hangs. The time limit is far longer than the test waits, so a
-# usable shell afterwards means Ctrl-C ended the call, not the limit.
+# Phase E: Ctrl-C during the wait. The fake codex has a child process, has
+# written its answer file, hangs, and on TERM takes a second to die and writes
+# the answer file again. The time limit is far longer than the test waits, so
+# a usable shell afterwards means Ctrl-C ended the call, not the limit.
 zpty -w zai 'zai use codex; export ZAI_FAKE_MODE=stall ZAI_TIMEOUT=20'
 sleep 0.5; drain_pty; out=''
 zpty -w -n zai 'echo interrupted'
@@ -63,7 +64,7 @@ sleep 1.5
 mid=$(scratch_files)
 answer=($td/cache/zai/run.*.codex-out(N))
 zpty -w -n zai $'\x03'
-sleep 2
+sleep 3
 drain_pty; E=$out; out=''
 check "E: scratch files exist mid-call"   'files=0' 0 "$mid"
 check "E: answer file written mid-call"   'answers=1' 1 "answers=${#answer}"
@@ -71,6 +72,8 @@ check "E: Ctrl-C leaves no scratch files" 'files=0' 1 "$(scratch_files)"
 check "E: nothing executed"               'EXEC:'   0 "$E"
 kill -0 $(<$td/log/pid) 2>/dev/null && stopped=no || stopped=yes
 check "E: Ctrl-C stops the CLI"           'yes'     1 "$stopped"
+kill -0 $(<$td/log/child) 2>/dev/null && stopped=no || stopped=yes
+check "E: Ctrl-C stops the CLI's child"   'yes'     1 "$stopped"
 zpty -w zai 'unset ZAI_FAKE_MODE ZAI_TIMEOUT; echo alive'
 sleep 1
 drain_pty; E2=$out; out=''

@@ -89,9 +89,20 @@ _zai_model() {
 # Callers run inside _zai_query's subshell, which is all the trap affects.
 _zai_run() {
   command timeout -k 5 "${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}" "$@" <&0 &
-  local pid=$!
-  trap "kill -TERM $pid 2>/dev/null" INT
+  local pid=$! rc interrupted=0
+  trap "interrupted=1; kill -TERM $pid 2>/dev/null" INT
   wait $pid
+  rc=$?
+  if (( interrupted )); then
+    # wait returned when the trap ran, not when the CLI died. Stay until
+    # timeout has finished stopping it (at most the -k grace period), so
+    # nothing can still be writing when the callers clean up.
+    while kill -0 $pid 2>/dev/null; do
+      wait $pid
+    done
+    return 130
+  fi
+  return $rc
 }
 _zai_timed_out() {
   (( $1 == 124 || $1 == 137 ))

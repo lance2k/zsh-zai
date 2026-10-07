@@ -155,6 +155,15 @@ for b in claude codex opencode; do
   chk "$b-timeout"         '[[ $rc == 124 ]] && (( SECONDS - started <= 4 ))'
 done
 
+# A child of the CLI that ignores TERM must not outlive a timed-out call and
+# write the answer file afterwards.
+ZAI_TIMEOUT=1 ask codex orphan
+orphan=$(logged child)
+chk codex-timeout-rc           '[[ $rc == 124 ]]'
+chk codex-timeout-kills-orphan '! kill -0 $orphan 2>/dev/null'
+sleep 4
+chk codex-timeout-no-late-file '[[ -z $(print -l $_zai_cache/*codex-out*(N)) ]]'
+
 ask bogus ok
 chk dispatch-bogus        '[[ $rc == 2 && -z $out && ! -e $ZAI_FAKE_LOG/calls ]]'
 chk bogus-writes-stderr   'grep -q "unknown ZAI_BACKEND" "$_zai_cache/run.$$.stderr"'

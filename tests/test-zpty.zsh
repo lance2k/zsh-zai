@@ -79,6 +79,23 @@ sleep 1
 drain_pty; E2=$out; out=''
 check "E: shell usable before the limit"  'EXEC:unset ZAI_FAKE_MODE ZAI_TIMEOUT; echo alive' 1 "$E2"
 
+# Phase F: Ctrl-C when the CLI dies at once but leaves a child that ignores
+# TERM and would write the answer file four seconds after launch.
+zpty -w zai 'export ZAI_FAKE_MODE=orphan ZAI_TIMEOUT=20'
+sleep 0.5; drain_pty; out=''
+zpty -w -n zai 'echo interrupted'
+zpty -w -n zai $'\e\\'
+sleep 1.5
+zpty -w -n zai $'\x03'
+sleep 1
+kill -0 $(<$td/log/child) 2>/dev/null && stopped=no || stopped=yes
+check "F: Ctrl-C stops a TERM-ignoring child" 'yes'     1 "$stopped"
+sleep 3
+drain_pty; out=''
+check "F: no late answer file"                'files=0' 1 "$(scratch_files)"
+zpty -w zai 'unset ZAI_FAKE_MODE ZAI_TIMEOUT'
+sleep 0.5; drain_pty; out=''
+
 # Restore a valid backend and install a slow stub for phases A-C
 zpty -w zai 'zai use claude'
 sleep 0.5

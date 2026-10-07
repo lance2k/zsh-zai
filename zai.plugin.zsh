@@ -87,6 +87,11 @@ _zai_model() {
 # CLI therefore runs in the background and the INT trap passes the interrupt
 # on; a foreground child would hold the trap back until the time limit.
 # Callers run inside _zai_query's subshell, which is all the trap affects.
+#
+# timeout exits as soon as the CLI itself does, so a child of the CLI that
+# ignores TERM would outlive a cancelled or timed-out call and could still
+# write the answer file. Its process group id is timeout's pid, so whatever
+# is left of the group is killed before returning on those two paths.
 _zai_run() {
   command timeout -k 5 "${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}" "$@" <&0 &
   local pid=$! rc interrupted=0
@@ -100,7 +105,10 @@ _zai_run() {
     while kill -0 $pid 2>/dev/null; do
       wait $pid
     done
-    return 130
+    rc=130
+  fi
+  if (( interrupted )) || _zai_timed_out $rc; then
+    kill -KILL -- -$pid 2>/dev/null
   fi
   return $rc
 }

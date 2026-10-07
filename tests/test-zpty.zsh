@@ -62,7 +62,7 @@ zpty -w -n zai 'echo interrupted'
 zpty -w -n zai $'\e\\'
 sleep 1.5
 mid=$(scratch_files)
-answer=($td/cache/zai/run.*.codex-out(N))
+answer=($td/cache/zai/run.*.codex-out.*(N))
 zpty -w -n zai $'\x03'
 sleep 3
 drain_pty; E=$out; out=''
@@ -78,6 +78,33 @@ zpty -w zai 'unset ZAI_FAKE_MODE ZAI_TIMEOUT; echo alive'
 sleep 1
 drain_pty; E2=$out; out=''
 check "E: shell usable before the limit"  'EXEC:unset ZAI_FAKE_MODE ZAI_TIMEOUT; echo alive' 1 "$E2"
+
+# Phase F: Ctrl-C when codex dies at once but leaves a child that ignores TERM
+# and writes its answer two seconds after launch. That late file must not be
+# shown as the next call's answer, and the next call must clear it away.
+rm -f $td/log/child
+zpty -w zai 'export ZAI_FAKE_MODE=orphan ZAI_TIMEOUT=20'
+sleep 0.5; drain_pty; out=''
+zpty -w -n zai 'echo interrupted'
+zpty -w -n zai $'\e\\'
+sleep 1
+[[ -s $td/log/child ]] && started=yes || started=no
+check "F: orphan child started"              'yes'     1 "$started"
+zpty -w -n zai $'\x03'
+sleep 2.5
+drain_pty; out=''
+zpty -w zai 'export ZAI_FAKE_MODE=ok'
+sleep 0.5; drain_pty; out=''
+zpty -w -n zai 'ls -la'
+zpty -w -n zai $'\ee'
+sleep 2
+drain_pty; F=$out; out=''
+check "F: next call shows its own answer"    'codex-reply' 1 "$F"
+check "F: late answer never shown"           'late'        0 "$F"
+check "F: next call clears the late file"    'files=0'     1 "$(scratch_files)"
+zpty -w -n zai $'\x15'
+zpty -w zai 'unset ZAI_FAKE_MODE ZAI_TIMEOUT'
+sleep 0.5; drain_pty; out=''
 
 # Restore a valid backend and install a slow stub for phases A-C
 zpty -w zai 'zai use claude'

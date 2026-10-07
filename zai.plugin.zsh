@@ -10,7 +10,7 @@
 # Config (set before the plugin loads, or per session via the `zai` command):
 #   ZAI_BACKEND         claude | codex | opencode      (default: claude)
 #   ZAI_CLAUDE_MODEL    default: haiku
-#   ZAI_CODEX_MODEL     default: gpt-5.3-codex-spark
+#   ZAI_CODEX_MODEL     default: unset (the Codex CLI picks its own model)
 #   ZAI_OPENCODE_MODEL  default: opencode-go/deepseek-v4-flash
 #   ZAI_TIMEOUT         seconds (default: 25)
 #   ZAI_KEY_SUGGEST     default: '^[\\'  (Alt+\)
@@ -22,7 +22,7 @@
 # no ephemeral mode); codex and opencode receive instructions inline in the
 # prompt rather than as a true system prompt.
 
-typeset -g ZAI_VERSION=1.0.2
+typeset -g ZAI_VERSION=1.1.0
 typeset -g _zai_cache=${XDG_CACHE_HOME:-$HOME/.cache}/zai
 typeset -g ZAI_KEY_SUGGEST=${ZAI_KEY_SUGGEST:-'^[\\'}
 typeset -g ZAI_KEY_EXPLAIN=${ZAI_KEY_EXPLAIN:-'^[e'}
@@ -62,9 +62,12 @@ typeset -gA _zai_model_var=(
   codex    ZAI_CODEX_MODEL
   opencode ZAI_OPENCODE_MODEL
 )
+# An empty default means no model flag is passed and the CLI chooses. codex
+# is left that way because which models may be named depends on the account
+# type it is logged in with.
 typeset -gA _zai_model_default=(
   claude   haiku
-  codex    gpt-5.3-codex-spark
+  codex    ''
   opencode opencode-go/deepseek-v4-flash
 )
 typeset -g _ZAI_DEFAULT_TIMEOUT=25
@@ -77,6 +80,10 @@ _zai_model() {
     return
   fi
   print -r -- "${(P)var:-$_zai_model_default[$backend]}"
+}
+_zai_model_label() {
+  local model=$(_zai_model "$@")
+  print -r -- "${model:-CLI default}"
 }
 
 # Every backend CLI is launched through this, so the time limit and the exit
@@ -138,13 +145,20 @@ _zai_backend_codex() {
   req=$(command cat)
   local sandbox=$_zai_cache/codex-home
   local workdir=${TMPDIR:-/tmp}/zai-codex-$UID
-  local out=$_zai_cache/run.$$.codex-out
+  # A fresh name per call: timeout exits as soon as codex itself does, so a
+  # child of codex that ignores TERM can outlive a cancelled or timed-out
+  # call and write its answer late. It must not land in a later call's file.
+  local out
+  out=$(command mktemp "$_zai_cache/run.$$.codex-out.XXXXXX") || return 1
   command mkdir -p -m 700 -- "$sandbox" "$workdir" || return 1
   [[ -O $workdir ]] || { print -u2 "workdir $workdir not owned by us"; return 1 }
   command ln -sf -- "${CODEX_HOME:-$HOME/.codex}/auth.json" "$sandbox/auth.json"
   cd -- "$workdir" || return 1
+  local model=$(_zai_model codex)
+  local -a model_flag
+  [[ -n $model ]] && model_flag=(-m "$model")
   HOME=$sandbox CODEX_HOME=$sandbox _zai_run codex exec \
-    -m "$(_zai_model codex)" \
+    "${model_flag[@]}" \
     -c model_reasoning_effort=low \
     -c project_doc_max_bytes=0 \
     -s read-only --ephemeral --skip-git-repo-check \
@@ -258,7 +272,7 @@ _zai_ask() {
     zle -M "$2"
     return 2
   fi
-  zle -M "⏳ zai: asking ${ZAI_BACKEND:-$_zai_backends[1]} ($(_zai_model))…"
+  zle -M "⏳ zai: asking ${ZAI_BACKEND:-$_zai_backends[1]} ($(_zai_model_label))…"
   zle -R
   {
     REPLY=$(print -r -- "$req" | _zai_query "$1")
@@ -336,14 +350,14 @@ zai() {
       print -r -- "zai: $cur model -> $2 (this session)"
       ;;
     status)
-      print -r -- "zai $ZAI_VERSION — backend: $cur ($(_zai_model)), timeout: ${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}s"
+      print -r -- "zai $ZAI_VERSION — backend: $cur ($(_zai_model_label)), timeout: ${ZAI_TIMEOUT:-$_ZAI_DEFAULT_TIMEOUT}s"
       print -r -- "keys: suggest $ZAI_KEY_SUGGEST  explain $ZAI_KEY_EXPLAIN"
       for b in $_zai_backends; do
         mark=' '
         [[ $b == $cur ]] && mark='*'
         inst='not installed'
         (( $+commands[$b] )) && inst='installed'
-        printf ' %s %-9s %-14s %s\n' $mark $b $inst "$(_zai_model $b)"
+        printf ' %s %-9s %-14s %s\n' $mark $b $inst "$(_zai_model_label $b)"
       done
       ;;
     help|-h|--help)

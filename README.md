@@ -74,7 +74,7 @@ Set before the plugin loads (e.g. in `~/.zshrc`); all optional.
 | -------- | ------- | ------- |
 | `ZAI_BACKEND` | `claude` | `claude`, `codex`, or `opencode` |
 | `ZAI_CLAUDE_MODEL` | `haiku` | Model for the claude backend |
-| `ZAI_CODEX_MODEL` | `gpt-5.3-codex-spark` | Model for the codex backend |
+| `ZAI_CODEX_MODEL` | unset (the Codex CLI picks) | Model for the codex backend; which names are accepted depends on how codex is logged in |
 | `ZAI_OPENCODE_MODEL` | `opencode-go/deepseek-v4-flash` | Model for the opencode backend (`provider/model`) |
 | `ZAI_TIMEOUT` | `25` | Per-request timeout, seconds |
 | `ZAI_KEY_SUGGEST` | `^[\\` (Alt+\) | Suggest keybinding |

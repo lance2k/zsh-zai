@@ -43,10 +43,11 @@ out=''
 zpty -w -n zai $'\x15'   # kill-whole-line to clear the buffer
 sleep 1
 
-# Suggest: NL -> command in buffer (not executed)
-zpty -w -n zai 'print the current date and time'
+# Suggest: NL -> command in buffer (not executed). The request must not
+# contain the string waited for, or the echo of the typed line satisfies it.
+zpty -w -n zai 'show how much disk space is free'
 zpty -w -n zai $'\e\\'
-if wait_for 'date' 45; then print "ok: [$backend] suggest produced a date command"
+if wait_for 'df' 45; then print "ok: [$backend] suggest produced a df command"
 else print -r -- "FAIL: [$backend] suggest (tail: ${out[-300,-1]})"; (( fails++ )); fi
 [[ $out == *'command not found'* ]] && { print "FAIL: stray execution"; (( fails++ )) }
 

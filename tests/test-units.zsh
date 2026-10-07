@@ -114,7 +114,7 @@ chk claude-model-empty-uses-default '[[ $(val --model) == haiku ]]'
 ask codex ok
 chk codex-reply-only-last-message '[[ $rc == 0 && $out == codex-reply ]]'
 chk codex-dispatch        '[[ $(logged calls) == codex ]]'
-chk codex-model-default   '[[ $(val -m) == gpt-5.3-codex-spark ]]'
+chk codex-model-default-is-cli-choice '! has -m'
 chk codex-home-sandboxed  '[[ $(logged env) == *"HOME=$_zai_cache/codex-home"$'"'\n'"'"CODEX_HOME=$_zai_cache/codex-home"$'"'\n'"'* ]]'
 chk codex-cwd-is-workdir  '[[ $(logged cwd) == ${TMPDIR:A}/zai-codex-$UID ]]'
 chk codex-cwd-not-cache   '[[ $(logged cwd) != ${_zai_cache:A}* ]]'
@@ -129,7 +129,8 @@ chk codex-out-file-removed '[[ -z $(print -l $_zai_cache/*codex-out*(N)) ]]'
 ZAI_CODEX_MODEL=other-model ask codex ok
 chk codex-model-override  '[[ $(val -m) == other-model ]]'
 ZAI_CODEX_MODEL= ask codex ok
-chk codex-model-empty-uses-default '[[ $(val -m) == gpt-5.3-codex-spark ]]'
+chk codex-model-empty-is-cli-choice '! has -m'
+chk codex-status-says-cli-default '[[ $(zai status) == *"codex "*"CLI default"* ]]'
 ask codex empty
 chk codex-empty-fails     '[[ $rc == 1 && -z $out ]]'
 chk codex-empty-message   'grep -q "codex produced no output" "$_zai_cache/run.$$.stderr"'
@@ -154,6 +155,19 @@ for b in claude codex opencode; do
   ZAI_TIMEOUT=1 ask $b hang
   chk "$b-timeout"         '[[ $rc == 124 ]] && (( SECONDS - started <= 4 ))'
 done
+
+# A child of codex that ignores TERM can outlive a timed-out call and write
+# its answer late. Each call has its own answer file, so that write cannot
+# land in a later call's.
+ZAI_TIMEOUT=1 ask codex orphan
+late_path=$(val --output-last-message)
+chk codex-orphan-started        '[[ $rc == 124 && -n $(logged child) ]]'
+ask codex ok
+chk codex-answer-file-per-call  '[[ -n $late_path && $(val --output-last-message) != $late_path ]]'
+chk codex-answer-file-is-ours   '[[ $(val --output-last-message) == $_zai_cache/run.$$.codex-out.* ]]'
+chk codex-reply-after-orphan    '[[ $rc == 0 && $out == codex-reply ]]'
+sleep 2
+command rm -f -- "$late_path"
 
 ask bogus ok
 chk dispatch-bogus        '[[ $rc == 2 && -z $out && ! -e $ZAI_FAKE_LOG/calls ]]'

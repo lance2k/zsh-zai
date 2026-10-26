@@ -101,6 +101,7 @@ chk claude-request-stdin  '[[ $(logged stdin) == "the request" ]]'
 chk claude-no-dynamic-sections 'has --exclude-dynamic-system-prompt-sections'
 chk claude-strict-mcp     'has --strict-mcp-config'
 chk claude-no-session     'has --no-session-persistence'
+chk claude-no-hooks       '[[ $(val --settings) == *'"'"'"disableAllHooks":true'"'"'* ]]'
 chk claude-cwd-is-cache   '[[ $(logged cwd) == ${_zai_cache:A} ]]'
 blocked=(${(s:,:)"$(val --disallowedTools)"})
 for tool in Bash Edit Write Read Glob Grep WebFetch WebSearch Task NotebookEdit TodoWrite Agent; do

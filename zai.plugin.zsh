@@ -17,10 +17,12 @@
 #   ZAI_KEY_EXPLAIN     default: '^[e'   (Alt+E)
 #
 # Trust boundary: backends run from an empty cache dir with tools, rules, MCP,
-# and plugins disabled as far as each CLI allows; user-level CLI config and
-# hooks still apply. Known deviations: opencode keeps session records (it has
-# no ephemeral mode); codex and opencode receive instructions inline in the
-# prompt rather than as a true system prompt.
+# and plugins disabled as far as each CLI allows; user-level CLI config
+# still applies, and so do hooks for codex and opencode (claude's are off: a
+# blocking user Stop hook would hold every call to the time limit). Known
+# deviations: opencode keeps session records (it has no ephemeral mode);
+# codex and opencode receive instructions inline in the prompt rather than
+# as a true system prompt.
 
 typeset -g ZAI_VERSION=1.1.0
 typeset -g _zai_cache=${XDG_CACHE_HOME:-$HOME/.cache}/zai
@@ -131,6 +133,7 @@ _zai_backend_claude() {
     --exclude-dynamic-system-prompt-sections \
     --disallowedTools 'Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit,TodoWrite,Agent' \
     --strict-mcp-config \
+    --settings '{"disableAllHooks":true}' \
     --no-session-persistence
 }
 
